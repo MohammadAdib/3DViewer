@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>3D Viewer — STL, STEP, IGES, glTF, OBJ online</title>
+    <meta name="description" content="Blazing-fast, installable 3D model viewer and converter. Open STL, STEP, IGES, glTF/GLB, OBJ, FBX, 3MF, PLY and more — right in your browser, fully offline. Export to STL, OBJ, GLB." />
+    <meta name="theme-color" content="#0a0b10" />
+    <meta name="color-scheme" content="dark" />
+    <link rel="icon" href="/favicon.ico" sizes="48x48" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon-180x180.png" />
+    <meta property="og:title" content="3D Viewer" />
+    <meta property="og:description" content="Open STL, STEP, IGES, glTF, OBJ, FBX, 3MF and more in your browser. Export to STL, OBJ, GLB." />
+  </head>
+  <body>
+    <div id="app">
+      <div id="stage"></div>
+
+      <!-- Empty state is static HTML so it paints before any JS runs -->
+      <section id="hero" class="hero">
+        <div class="hero-card">
+          <div class="hero-logo">
+            <svg viewBox="0 0 512 512" aria-hidden="true"><path d="M256 106 386 181 256 256 126 181Z" fill="#5ee7ff"/><path d="M126 181 256 256V406L126 331Z" fill="#8b5cf6"/><path d="M386 181 256 256V406L386 331Z" fill="#ec4899"/></svg>
+          </div>
+          <h1>Drop a 3D model anywhere</h1>
+          <p class="hero-sub">Opens instantly, entirely on your device. Nothing is uploaded.</p>
+          <div class="hero-actions">
+            <button class="btn primary lg" data-action="open">
+              <svg viewBox="0 0 24 24"><path d="M4 20h16M12 4v12m0-12 5 5m-5-5L7 9"/></svg>
+              Open file
+            </button>
+            <button class="btn ghost lg" data-action="demo">Load demo</button>
+          </div>
+          <div class="chips">
+            <span class="chip hot">STEP</span><span class="chip hot">IGES</span><span class="chip hot">STL</span><span class="chip hot">glTF / GLB</span><span class="chip">OBJ + MTL</span><span class="chip">FBX</span><span class="chip">3MF</span><span class="chip">PLY</span><span class="chip">DAE</span><span class="chip">3DS</span><span class="chip">AMF</span><span class="chip">USDZ</span><span class="chip">VRML</span><span class="chip">BREP</span><span class="chip">PCD</span>
+          </div>
+          <p class="hero-foot">Export to <b>STL</b> · <b>OBJ</b> · <b>GLB</b> · <b>glTF</b> · <b>PLY</b> · <b>USDZ</b> &nbsp;—&nbsp; works offline &nbsp;—&nbsp; press <kbd>?</kbd> for shortcuts</p>
+        </div>
+      </section>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
