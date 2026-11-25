@@ -33,7 +33,6 @@ Press <kbd>?</kbd> in the app for keyboard shortcuts.
 npm install
 npm run dev      # http://localhost:5173/3DViewer/
 npm run build    # type-check + production build to dist/
-npm run icons    # regenerate PWA icons from public/favicon.svg
 ```
 
 Pushing to `main` builds and deploys to GitHub Pages via `.github/workflows/deploy.yml`.
