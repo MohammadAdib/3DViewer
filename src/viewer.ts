@@ -48,6 +48,10 @@ export interface Settings {
   projection: 'perspective' | 'orthographic'
   fov: number
   upAxis: 'auto' | UpAxis
+  /** Part rotation in degrees, about the file's own X/Y/Z axes. Applied on export too. */
+  rotX: number
+  rotY: number
+  rotZ: number
   cadQuality: number
 }
 
@@ -85,6 +89,9 @@ export const DEFAULTS: Settings = {
   projection: 'perspective',
   fov: 40,
   upAxis: 'auto',
+  rotX: 0,
+  rotY: 0,
+  rotZ: 0,
   cadQuality: 0.5,
 }
 
@@ -225,6 +232,7 @@ export class Viewer {
 
   private modelRoot = new THREE.Group() // centering offset
   private upGroup = new THREE.Group() // Z-up → Y-up rotation
+  private rotGroup = new THREE.Group() // user rotation, in the file's own axes
   model: LoadedModel | null = null
   private originals = new Map<THREE.Mesh, THREE.Material | THREE.Material[]>()
   private edgeLines: THREE.LineSegments[] = []
@@ -290,7 +298,8 @@ export class Viewer {
     this.ground.receiveShadow = true
     this.scene.add(this.ground)
 
-    this.upGroup.add(new THREE.Object3D())
+    this.rotGroup.add(new THREE.Object3D())
+    this.upGroup.add(this.rotGroup)
     this.modelRoot.add(this.upGroup)
     this.scene.add(this.modelRoot, this.measureGroup)
 
@@ -409,15 +418,15 @@ export class Viewer {
         this.originals.set(m, m.material)
       }
     })
-    this.upGroup.clear()
-    this.upGroup.add(content)
+    this.rotGroup.clear()
+    this.rotGroup.add(content)
     if (model.animations.length) {
       this.mixer = new THREE.AnimationMixer(content)
       this.action = this.mixer.clipAction(model.animations[0])
       this.action.play()
     }
     this.matKey = ''
-    this.applyUpAxis()
+    this.applyOrientation()
     this.apply(this.s)
     this.fit(false)
   }
@@ -451,11 +460,16 @@ export class Viewer {
     return this.s.upAxis === 'auto' ? (this.model?.upAxis ?? 'y') : this.s.upAxis
   }
 
-  private applyUpAxis() {
+  private applyOrientation() {
+    const s = this.s
+    const rad = THREE.MathUtils.degToRad
     this.upGroup.rotation.set(this.effectiveUp === 'z' ? -Math.PI / 2 : 0, 0, 0)
+    this.rotGroup.rotation.set(rad(s.rotX), rad(s.rotY), rad(s.rotZ))
     this.modelRoot.position.set(0, 0, 0)
     this.modelRoot.updateMatrixWorld(true)
-    const box = new THREE.Box3().setFromObject(this.upGroup)
+    // Off-axis angles make the cheap (transformed bounding box) estimate loose, so the part would float.
+    const precise = [s.rotX, s.rotY, s.rotZ].some((a) => a % 90 !== 0)
+    const box = new THREE.Box3().setFromObject(this.upGroup, precise)
     if (box.isEmpty()) box.set(new THREE.Vector3(-1, -1, -1), new THREE.Vector3(1, 1, 1))
     const c = box.getCenter(new THREE.Vector3())
     // centre on X/Z, sit on the ground plane
@@ -466,10 +480,6 @@ export class Viewer {
     this.radius = Math.max(sphere.radius, 1e-6)
     this.center.copy(sphere.center)
     this.layoutStage()
-    if (this.edgeLines.length) {
-      this.removeEdges()
-      this.buildEdges()
-    }
     this.clearMeasure()
   }
 
@@ -521,9 +531,10 @@ export class Viewer {
     const s = this.s
     const r = this.renderer
 
-    if (s.upAxis !== prev.upAxis && this.model) {
-      this.applyUpAxis()
-      this.fit(true)
+    if (this.model) {
+      const upChanged = s.upAxis !== prev.upAxis
+      if (upChanged || s.rotX !== prev.rotX || s.rotY !== prev.rotY || s.rotZ !== prev.rotZ) this.applyOrientation()
+      if (upChanged) this.fit(true)
     }
 
     // environment
@@ -996,7 +1007,7 @@ export class Viewer {
     download(new Blob(chunks, { type: mime.split(';')[0] || 'video/webm' }), `${name}-turntable.${ext}`)
   }
 
-  /** Exports the model. Mesh formats keep the file's original coordinates; glTF/USDZ are written Y-up. */
+  /** Exports the model with the part rotation applied. Mesh formats stay in the file's own axes; glTF/USDZ are written Y-up. */
   async export(fmt: ExportFormat, name: string) {
     if (!this.model) return
     const content = this.model.object

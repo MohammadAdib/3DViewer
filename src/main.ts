@@ -55,9 +55,11 @@ const LOGO = $('.hero-logo')!.innerHTML
 
 // ------------------------------------------------------------------- state
 const STORE = 'viewer3d.settings.v1'
+/** Settings that belong to one model; reset on page load and when a new model opens. */
+const PER_MODEL = { section: 'off', upAxis: 'auto', rotX: 0, rotY: 0, rotZ: 0 } satisfies Partial<Settings>
 function loadSettings(): Settings {
   try {
-    return { ...DEFAULTS, ...JSON.parse(localStorage.getItem(STORE) || '{}'), section: 'off', upAxis: 'auto' }
+    return { ...DEFAULTS, ...JSON.parse(localStorage.getItem(STORE) || '{}'), ...PER_MODEL }
   } catch {
     return { ...DEFAULTS }
   }
@@ -453,12 +455,25 @@ function renderCad() {
       ? group(
           'CAD tessellation',
           slider('Detail', 'cadQuality', 0, 1, 0.05, (v) => (v < 0.34 ? 'Coarse' : v < 0.67 ? 'Medium' : 'Fine')),
-          h('div', { class: 'row-btns' }, h('button', { class: 'btn', html: icon('reload') + 'Re-tessellate', onclick: () => openFiles(currentFiles) })),
+          h('div', { class: 'row-btns' }, h('button', { class: 'btn', html: icon('reload') + 'Re-tessellate', onclick: () => openFiles(currentFiles, true) })),
         )
       : '',
   )
   sync()
 }
+
+// Part rotation, in the file's own axes; exports are written rotated.
+const ROT_KEYS = [['X', 'rotX'], ['Y', 'rotY'], ['Z', 'rotZ']] as const
+const wrapDeg = (d: number) => ((((d + 180) % 360) + 360) % 360) - 180
+const rotCtls = [
+  ...ROT_KEYS.map(([axis, key]) => slider(`Rotate ${axis}`, key, -180, 180, 1, (v) => `${v}°`)),
+  h(
+    'div',
+    { class: 'row-btns' },
+    ...ROT_KEYS.map(([axis, key]) => h('button', { class: 'btn', title: `Rotate 90° about ${axis}`, onclick: () => set({ [key]: wrapDeg(viewer.s[key] + 90) }) }, `${axis} +90°`)),
+    h('button', { class: 'btn', title: 'Clear rotation', onclick: () => set({ rotX: 0, rotY: 0, rotZ: 0 }) }, 'Reset'),
+  ),
+]
 
 const toolsPage = h(
   'div',
@@ -470,7 +485,12 @@ const toolsPage = h(
     toggle('Auto-rotate', 'autoRotate'),
     slider('Rotate speed', 'autoRotateSpeed', -10, 10, 0.1),
   ),
-  group('Orientation', seg('Up axis', 'upAxis', [['auto', 'Auto'], ['y', 'Y-up'], ['z', 'Z-up']]), toggle('Show grid', 'grid')),
+  group(
+    'Orientation',
+    seg('Up axis', 'upAxis', [['auto', 'Auto'], ['y', 'Y-up'], ['z', 'Z-up']]),
+    toggle('Show grid', 'grid'),
+    ...rotCtls,
+  ),
   group('Section cut', seg(null, 'section', [['off', 'Off'], ['x', 'X'], ['y', 'Y'], ['z', 'Z']]), sectionCtls),
   animGroup,
   cadGroup,
@@ -537,7 +557,7 @@ viewer.onError = (m) => {
 }
 
 // ------------------------------------------------------------------- actions
-async function openFiles(files: File[]) {
+async function openFiles(files: File[], reload = false) {
   if (!files.length) return
   const primary = files.find((f) => extOf(f.name) in FORMATS) ?? files[0]
   loadingFile.textContent = primary.name
@@ -548,7 +568,7 @@ async function openFiles(files: File[]) {
     const model = await loadFiles(files, (m) => (loadingMsg.textContent = m), viewer.s.cadQuality)
     loadMs = performance.now() - t0
     currentFiles = files
-    showModel(model)
+    showModel(model, reload)
     toast(`Loaded ${model.name} in ${loadMs < 1000 ? loadMs.toFixed(0) + ' ms' : (loadMs / 1000).toFixed(2) + ' s'}`, 'ok', 2200)
   } catch (err) {
     console.error(err)
@@ -558,8 +578,11 @@ async function openFiles(files: File[]) {
   }
 }
 
-function showModel(model: ReturnType<typeof createDemoModel>) {
-  if (viewer.s.section !== 'off' || viewer.s.upAxis !== 'auto') viewer.apply({ section: 'off', upAxis: 'auto' })
+/** `reload` re-opens the same files (e.g. re-tessellating), so the part keeps its orientation. */
+function showModel(model: ReturnType<typeof createDemoModel>, reload = false) {
+  const p = PER_MODEL
+  const s = viewer.s
+  if (!reload && (s.section !== p.section || s.upAxis !== p.upAxis || s.rotX || s.rotY || s.rotZ)) viewer.apply(p)
   viewer.setMeasuring(false)
   viewer.setModel(model)
   document.body.classList.add('has-model')
