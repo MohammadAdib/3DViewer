@@ -57,7 +57,7 @@ const LOGO = $('.hero-logo')!.innerHTML
 const STORE = 'viewer3d.settings.v2'
 // v1 saved every setting, so untouched ones pinned that era's defaults; drop the ones that have since changed.
 const STORE_V1 = 'viewer3d.settings.v1'
-const V1_DEFAULTS: Partial<Settings> = { grid: false, color: '#8ab4f8' }
+const V1_DEFAULTS: Partial<Settings> = { grid: false, color: '#8ab4f8', exposure: 1 }
 /** Settings that belong to one model; reset on page load and when a new model opens. */
 const PER_MODEL = { section: 'off', upAxis: 'auto', rotX: 0, rotY: 0, rotZ: 0 } satisfies Partial<Settings>
 function loadSettings(): Settings {

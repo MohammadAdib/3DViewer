@@ -66,7 +66,7 @@ export const DEFAULTS: Settings = {
   keyAzimuth: 35,
   keyElevation: 55,
   ambient: 0.35,
-  exposure: 1,
+  exposure: 0.5,
   toneMapping: 'agx',
   shadows: true,
   grid: true,
