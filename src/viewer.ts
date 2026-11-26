@@ -67,7 +67,7 @@ export const DEFAULTS: Settings = {
   shadows: true,
   grid: false,
   materialMode: 'original',
-  color: '#8ab4f8',
+  color: '#cccccc',
   metalness: 0.1,
   roughness: 0.35,
   clearcoat: 0.3,

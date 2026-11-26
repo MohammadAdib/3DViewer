@@ -736,12 +736,17 @@ document.querySelectorAll<HTMLElement>('[data-action]').forEach((el) =>
 
 // ------------------------------------------------------------------- PWA install + file handling
 let installPrompt: (Event & { prompt: () => void }) | null = null
+const runningInstalled = () =>
+  matchMedia('(display-mode: standalone), (display-mode: window-controls-overlay)').matches || (navigator as any).standalone === true
 window.addEventListener('beforeinstallprompt', (e) => {
   e.preventDefault()
   installPrompt = e as any
-  installBtn.hidden = false
+  installBtn.hidden = runningInstalled()
 })
-window.addEventListener('appinstalled', () => (installBtn.hidden = true))
+window.addEventListener('appinstalled', () => {
+  installPrompt = null
+  installBtn.hidden = true
+})
 
 // Installed PWA: OS "Open with 3D Viewer" hands us files via the launch queue.
 const lq = (window as any).launchQueue

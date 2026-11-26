@@ -3,6 +3,9 @@ import type { CadRequest, CadResponse, CadNode } from './cad.worker'
 
 export type UpAxis = 'y' | 'z'
 
+// Neutral Blender-style gray for models that carry no color of their own.
+export const DEFAULT_COLOR = 0xcccccc
+
 export interface LoadedModel {
   object: THREE.Object3D
   name: string
@@ -103,7 +106,7 @@ function meshFromGeometry(geometry: THREE.BufferGeometry, allowPoints = false): 
   if (!geometry.attributes.normal) geometry.computeVertexNormals()
   const mesh = new THREE.Mesh(
     geometry,
-    new THREE.MeshStandardMaterial({ color: hasColor ? 0xffffff : 0xb8c4d6, vertexColors: hasColor, metalness: 0.1, roughness: 0.5 }),
+    new THREE.MeshStandardMaterial({ color: hasColor ? 0xffffff : DEFAULT_COLOR, vertexColors: hasColor, metalness: 0.1, roughness: 0.5 }),
   )
   return mesh
 }
@@ -160,7 +163,7 @@ async function parse(
         obj.traverse((o) => {
           if ((o as THREE.Mesh).isMesh) {
             const m = o as THREE.Mesh
-            m.material = new THREE.MeshStandardMaterial({ color: 0xb8c4d6, metalness: 0.1, roughness: 0.5 })
+            m.material = new THREE.MeshStandardMaterial({ color: DEFAULT_COLOR, metalness: 0.1, roughness: 0.5 })
           }
         })
       }
@@ -262,7 +265,7 @@ async function parseCad(ext: string, buffer: ArrayBuffer, onProgress: Progress, 
     else g.computeVertexNormals()
     g.setIndex(new THREE.BufferAttribute(m.index, 1))
 
-    const base = m.color ? new THREE.Color().setRGB(...m.color, THREE.SRGBColorSpace) : new THREE.Color(0xb8c4d6)
+    const base = m.color ? new THREE.Color().setRGB(...m.color, THREE.SRGBColorSpace) : new THREE.Color(DEFAULT_COLOR)
     const mat = () => new THREE.MeshStandardMaterial({ color: base, metalness: 0.15, roughness: 0.45 })
     const faceColored = m.faces.some((f) => f.color)
     let material: THREE.Material | THREE.Material[] = mat()
