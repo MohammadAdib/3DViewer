@@ -501,7 +501,11 @@ function togglePanel(force?: boolean) {
   panelOpen = force ?? !panelOpen
   panel.classList.toggle('closed', !panelOpen)
   panelBtn.classList.toggle('on', panelOpen)
+  updateInset()
 }
+const wide = matchMedia('(min-width: 761px)')
+const updateInset = () => viewer.setInsetRight(panelOpen && wide.matches && viewer.model ? panel.offsetWidth + 12 : 0)
+wide.addEventListener('change', updateInset)
 
 // ------------------------------------------------------------------- overlays
 const drop = h('div', { class: 'drop' }, h('div', {}, 'Drop to open'))
@@ -568,6 +572,7 @@ function showModel(model: ReturnType<typeof createDemoModel>) {
   titleEl.title = model.name
   badgeEl.textContent = model.format
   document.title = `${model.name} — 3D Viewer`
+  updateInset()
   renderStats()
   renderParts()
   renderAnim()
