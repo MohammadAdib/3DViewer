@@ -56,7 +56,7 @@ export const DEFAULTS: Settings = {
   envIntensity: 1,
   envRotation: 0,
   background: 'gradient',
-  bgColor: '#0b0b0c',
+  bgColor: '#15171f',
   keyIntensity: 2.2,
   keyColor: '#ffffff',
   keyAzimuth: 35,
@@ -124,10 +124,10 @@ function panel(scene: THREE.Scene, color: string, intensity: number, w: number, 
 }
 
 export const ENVS: Record<EnvId, EnvDef> = {
-  studio: { label: 'Studio', bg: ['#141518', '#060607'] },
+  studio: { label: 'Studio', bg: ['#2a2f3d', '#0b0c11'] },
   lightbox: {
     label: 'Lightbox',
-    bg: ['#2a2b2f', '#0e0e10'],
+    bg: ['#f4f6fa', '#c9ced8'],
     build: () => {
       const s = new THREE.Scene()
       s.add(gradientDome('#ffffff', '#e9edf3', '#b8bec9'))
@@ -140,7 +140,7 @@ export const ENVS: Record<EnvId, EnvDef> = {
   },
   soft: {
     label: 'Overcast',
-    bg: ['#1a1c20', '#08090a'],
+    bg: ['#4b5566', '#171a21'],
     build: () => {
       const s = new THREE.Scene()
       s.add(gradientDome('#d9e2ef', '#8b97a8', '#2c313b'))
@@ -150,7 +150,7 @@ export const ENVS: Record<EnvId, EnvDef> = {
   },
   sunset: {
     label: 'Sunset',
-    bg: ['#1f1416', '#080607'],
+    bg: ['#5a2f3a', '#140b14'],
     build: () => {
       const s = new THREE.Scene()
       s.add(gradientDome('#2b2350', '#ff8a4c', '#1a1018'))
@@ -161,7 +161,7 @@ export const ENVS: Record<EnvId, EnvDef> = {
   },
   neon: {
     label: 'Neon',
-    bg: ['#17121e', '#060508'],
+    bg: ['#24123a', '#07050d'],
     build: () => {
       const s = new THREE.Scene()
       s.add(gradientDome('#0b0820', '#120a24', '#030208'))
@@ -173,7 +173,7 @@ export const ENVS: Record<EnvId, EnvDef> = {
   },
   night: {
     label: 'Moonlight',
-    bg: ['#10141c', '#050608'],
+    bg: ['#18223a', '#05070d'],
     build: () => {
       const s = new THREE.Scene()
       s.add(gradientDome('#0b1224', '#1a2440', '#030409'))
@@ -380,23 +380,9 @@ export class Viewer {
     const h = this.container.clientHeight || 1
     this.renderer.setSize(w, h)
     this.persp.aspect = w / h
-    // Shift the optical centre left so the model isn't hidden behind the side panel.
-    const shift = Math.min(this.insetRight / 2, w / 4)
-    for (const cam of [this.persp, this.ortho]) {
-      if (shift > 0) cam.setViewOffset(w, h, shift, 0, w, h)
-      else cam.clearViewOffset()
-    }
     this.persp.updateProjectionMatrix()
     this.updateOrthoFrustum()
     this.invalidate()
-  }
-
-  private insetRight = 0
-  /** Width (px) of UI covering the right edge of the viewport. */
-  setInsetRight(px: number) {
-    if (px === this.insetRight) return
-    this.insetRight = px
-    this.resize()
   }
 
   private updateOrthoFrustum() {
@@ -758,9 +744,7 @@ export class Viewer {
 
   private flyTo(dir: THREE.Vector3, animate: boolean) {
     const fov = THREE.MathUtils.degToRad(this.persp.fov)
-    const w = this.container.clientWidth || 1
-    const h = this.container.clientHeight || 1
-    const aspect = Math.min(1, Math.max(0.3, (w - this.insetRight) / h))
+    const aspect = Math.min(1, this.persp.aspect)
     const dist = ((this.radius / Math.sin(fov / 2)) * 1.3) / Math.sqrt(aspect)
     const pos = this.center.clone().addScaledVector(dir, dist)
     if (this.camera === this.ortho) {
