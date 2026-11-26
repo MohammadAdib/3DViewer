@@ -69,7 +69,7 @@ export const DEFAULTS: Settings = {
   exposure: 1,
   toneMapping: 'agx',
   shadows: true,
-  grid: false,
+  grid: true,
   materialMode: 'original',
   color: '#cccccc',
   metalness: 0.1,
@@ -196,6 +196,22 @@ const TONE: Record<ToneMap, THREE.ToneMapping> = {
   agx: THREE.AgXToneMapping,
   neutral: THREE.NeutralToneMapping,
   none: THREE.NoToneMapping,
+}
+
+export type Rotation = Pick<Settings, 'rotX' | 'rotY' | 'rotZ'>
+
+/**
+ * Turns a part rotation a further `deg` about one of the file's fixed axes, so a flip always spins
+ * about that axis no matter how the part is already rotated (unlike bumping a single Euler angle).
+ */
+export function turnRotation(r: Rotation, axis: 'x' | 'y' | 'z', deg: number): Rotation {
+  const { degToRad, radToDeg } = THREE.MathUtils
+  const current = new THREE.Quaternion().setFromEuler(new THREE.Euler(degToRad(r.rotX), degToRad(r.rotY), degToRad(r.rotZ)))
+  const turn = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3().setComponent('xyz'.indexOf(axis), 1), degToRad(deg))
+  const e = new THREE.Euler().setFromQuaternion(turn.multiply(current))
+  // Round away float noise (89.9999… → 90) and avoid showing "-0°".
+  const clean = (rad: number) => Math.round(radToDeg(rad) * 100) / 100 || 0
+  return { rotX: clean(e.x), rotY: clean(e.y), rotZ: clean(e.z) }
 }
 
 export interface Stats {

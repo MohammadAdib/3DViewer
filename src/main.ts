@@ -1,6 +1,6 @@
 import './style.css'
 import { registerSW } from 'virtual:pwa-register'
-import { Viewer, DEFAULTS, ENVS, formatLen } from './viewer'
+import { Viewer, DEFAULTS, ENVS, formatLen, turnRotation } from './viewer'
 import type { Settings, EnvId, ViewName } from './viewer'
 import { ACCEPT, FORMATS, createDemoModel, extOf, loadFiles } from './loaders'
 import { EXPORTS } from './exporters'
@@ -54,12 +54,20 @@ const icon = (n: string) => `<svg viewBox="0 0 24 24">${ICON[n]}</svg>`
 const LOGO = $('.hero-logo')!.innerHTML
 
 // ------------------------------------------------------------------- state
-const STORE = 'viewer3d.settings.v1'
+const STORE = 'viewer3d.settings.v2'
+// v1 saved every setting, so untouched ones pinned that era's defaults; drop the ones that have since changed.
+const STORE_V1 = 'viewer3d.settings.v1'
+const V1_DEFAULTS: Partial<Settings> = { grid: false, color: '#8ab4f8' }
 /** Settings that belong to one model; reset on page load and when a new model opens. */
 const PER_MODEL = { section: 'off', upAxis: 'auto', rotX: 0, rotY: 0, rotZ: 0 } satisfies Partial<Settings>
 function loadSettings(): Settings {
   try {
-    return { ...DEFAULTS, ...JSON.parse(localStorage.getItem(STORE) || '{}'), ...PER_MODEL }
+    let saved = JSON.parse(localStorage.getItem(STORE) || 'null')
+    if (!saved) {
+      saved = JSON.parse(localStorage.getItem(STORE_V1) || '{}')
+      for (const [k, v] of Object.entries(V1_DEFAULTS)) if (saved[k] === v) delete saved[k]
+    }
+    return { ...DEFAULTS, ...saved, ...PER_MODEL }
   } catch {
     return { ...DEFAULTS }
   }
@@ -69,7 +77,10 @@ const save = () => {
   clearTimeout(saveTimer)
   saveTimer = window.setTimeout(() => {
     try {
-      localStorage.setItem(STORE, JSON.stringify(viewer.s))
+      // Only store what differs from the defaults, so a changed default reaches everyone who never touched it.
+      const changed = Object.fromEntries(Object.entries(viewer.s).filter(([k, v]) => v !== DEFAULTS[k as keyof Settings]))
+      localStorage.setItem(STORE, JSON.stringify(changed))
+      localStorage.removeItem(STORE_V1)
     } catch { /* private mode */ }
   }, 300)
 }
@@ -463,21 +474,24 @@ function renderCad() {
 }
 
 // Part rotation, in the file's own axes; exports are written rotated.
-const ROT_KEYS = [['X', 'rotX'], ['Y', 'rotY'], ['Z', 'rotZ']] as const
-const wrapDeg = (d: number) => ((((d + 180) % 360) + 360) % 360) - 180
-const rotCtls = [
-  ...ROT_KEYS.map(([axis, key]) => slider(`Rotate ${axis}`, key, -180, 180, 1, (v) => `${v}°`)),
-  h(
-    'div',
-    { class: 'row-btns' },
-    ...ROT_KEYS.map(([axis, key]) => h('button', { class: 'btn', title: `Rotate 90° about ${axis}`, onclick: () => set({ [key]: wrapDeg(viewer.s[key] + 90) }) }, `${axis} +90°`)),
-    h('button', { class: 'btn', title: 'Clear rotation', onclick: () => set({ rotX: 0, rotY: 0, rotZ: 0 }) }, 'Reset'),
-  ),
-]
+const ROT_AXES = [['x', 'rotX'], ['y', 'rotY'], ['z', 'rotZ']] as const
+const resetRotBtn = h('button', { class: 'h5-btn', title: 'Clear rotation', onclick: () => set({ rotX: 0, rotY: 0, rotZ: 0 }) }, 'Reset') as HTMLButtonElement
+syncers.push(() => (resetRotBtn.disabled = !(viewer.s.rotX || viewer.s.rotY || viewer.s.rotZ)))
+// Flips turn about the fixed axis (see turnRotation), so they may move more than one angle slider.
+const flipBtn = (axis: 'x' | 'y' | 'z', deg: number) => {
+  const label = `${deg > 0 ? '+' : '−'}${Math.abs(deg)}°`
+  return h('button', { class: 'btn', title: `Turn ${label} about ${axis.toUpperCase()}`, onclick: () => set(turnRotation(viewer.s, axis, deg)) }, label)
+}
+const rotateGroup = group(
+  h('h5', {}, 'Rotate part', resetRotBtn),
+  h('div', { class: 'flips' }, ...ROT_AXES.flatMap(([axis]) => [h('i', { class: axis }, axis.toUpperCase()), flipBtn(axis, -90), flipBtn(axis, 90)])),
+  ...ROT_AXES.map(([axis, key]) => slider(`${axis.toUpperCase()} angle`, key, -180, 180, 1, (v) => `${v}°`)),
+)
 
 const toolsPage = h(
   'div',
   { class: 'tab-page' },
+  rotateGroup,
   group(
     'Camera',
     seg('Projection', 'projection', [['perspective', 'Persp'], ['orthographic', 'Ortho']]),
@@ -485,12 +499,7 @@ const toolsPage = h(
     toggle('Auto-rotate', 'autoRotate'),
     slider('Rotate speed', 'autoRotateSpeed', -10, 10, 0.1),
   ),
-  group(
-    'Orientation',
-    seg('Up axis', 'upAxis', [['auto', 'Auto'], ['y', 'Y-up'], ['z', 'Z-up']]),
-    toggle('Show grid', 'grid'),
-    ...rotCtls,
-  ),
+  group('Orientation', seg('Up axis', 'upAxis', [['auto', 'Auto'], ['y', 'Y-up'], ['z', 'Z-up']]), toggle('Show grid', 'grid')),
   group('Section cut', seg(null, 'section', [['off', 'Off'], ['x', 'X'], ['y', 'Y'], ['z', 'Z']]), sectionCtls),
   animGroup,
   cadGroup,

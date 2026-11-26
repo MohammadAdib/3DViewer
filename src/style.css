@@ -257,6 +257,15 @@ input[type=range]:active::-webkit-slider-thumb { transform: scale(1.2); }
 .note { color: var(--dim); font-size: 11.5px; margin: 6px 0; }
 .row-btns { display: flex; gap: 6px; margin: 6px 0; }
 .row-btns .btn { flex: 1; height: 32px; font-size: 12px; }
+.flips { display: grid; grid-template-columns: 16px 1fr 1fr; gap: 6px; align-items: center; margin: 2px 0 8px; }
+.flips i { font: 700 11px var(--mono); font-style: normal; text-align: center; }
+.flips i.x { color: #ff6b81; }
+.flips i.y { color: #8be36b; }
+.flips i.z { color: #5c9dff; }
+.flips .btn { height: 32px; font-size: 12px; }
+.h5-btn { border: 0; background: none; padding: 0; color: var(--muted); font: 600 11px var(--font); cursor: pointer; }
+.h5-btn:hover { color: var(--text); }
+.h5-btn:disabled { opacity: .35; cursor: default; }
 
 /* ---------------------------------------------------------------- overlays */
 .drop {
