@@ -6,6 +6,7 @@ import type { LoadedModel, UpAxis } from './loaders'
 import { setLoaderRenderer } from './loaders'
 import { download, exportObject } from './exporters'
 import type { ExportFormat } from './exporters'
+import type { IssueOverlay } from './meshfix'
 
 // ------------------------------------------------------------------ settings
 export type EnvId = 'studio' | 'lightbox' | 'soft' | 'sunset' | 'neon' | 'night'
@@ -257,6 +258,8 @@ export class Viewer {
   private xrayMat: THREE.ShaderMaterial
   private edgeMat = new THREE.LineBasicMaterial({ color: 0x000000 })
   private mixer: THREE.AnimationMixer | null = null
+  private issueGroup: THREE.Group | null = null
+  showIssues = true
   private action: THREE.AnimationAction | null = null
 
   radius = 1
@@ -448,6 +451,7 @@ export class Viewer {
   }
 
   private clearModel() {
+    this.setIssues(null)
     this.removeEdges()
     this.clearMeasure()
     this.mixer?.stopAllAction()
@@ -694,6 +698,69 @@ export class Viewer {
       if ((o as THREE.Points).isPoints) tune((o as THREE.Points).material as THREE.Material)
     })
     this.edgeMat.clippingPlanes = planes
+    this.invalidate()
+  }
+
+  // --------------------------------------------------------- mesh issues
+  /** Highlights mesh defects (coordinates in the model's own frame). Pass null to clear. */
+  setIssues(o: IssueOverlay | null) {
+    if (this.issueGroup) {
+      this.issueGroup.removeFromParent()
+      this.issueGroup.traverse((x) => {
+        const m = x as THREE.Mesh
+        m.geometry?.dispose()
+        ;(m.material as THREE.Material | undefined)?.dispose()
+      })
+      this.issueGroup = null
+    }
+    const content = this.model?.object
+    if (!o || !content) return this.invalidate()
+    const g = new THREE.Group()
+    g.name = 'Mesh issues'
+    g.userData.isOverlay = true
+    const geo = (arr: Float32Array) => new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(arr, 3))
+    const edges = (arr: Float32Array, color: number) => {
+      if (!arr.length) return
+      const lines = new THREE.LineSegments(geo(arr), new THREE.LineBasicMaterial({ color, depthTest: false, transparent: true, toneMapped: false }))
+      // a dot on every defect so even sub-pixel edges are easy to spot
+      const mids = new Float32Array(arr.length / 2)
+      for (let i = 0; i < arr.length / 6; i++) for (let k = 0; k < 3; k++) mids[i * 3 + k] = (arr[i * 6 + k] + arr[i * 6 + 3 + k]) / 2
+      const dots = new THREE.Points(geo(mids), new THREE.PointsMaterial({ color, size: 6, sizeAttenuation: false, depthTest: false, transparent: true, toneMapped: false }))
+      lines.renderOrder = dots.renderOrder = 990
+      g.add(lines, dots)
+    }
+    edges(o.naked, 0xff3b3b)
+    edges(o.nonManifold, 0xffb020)
+    if (o.inverted.length) {
+      const inv = new THREE.Mesh(
+        geo(o.inverted),
+        new THREE.MeshBasicMaterial({
+          color: 0xff2bd6,
+          side: THREE.DoubleSide,
+          transparent: true,
+          opacity: 0.7,
+          toneMapped: false,
+          polygonOffset: true,
+          polygonOffsetFactor: -2,
+          polygonOffsetUnits: -2,
+        }),
+      )
+      inv.renderOrder = 980
+      g.add(inv)
+    }
+    g.traverse((x) => (x.raycast = () => {}))
+    content.updateMatrix()
+    g.matrixAutoUpdate = false
+    g.matrix.copy(content.matrix)
+    g.visible = this.showIssues
+    content.parent?.add(g)
+    this.issueGroup = g
+    this.invalidate()
+  }
+
+  setShowIssues(on: boolean) {
+    this.showIssues = on
+    if (this.issueGroup) this.issueGroup.visible = on
     this.invalidate()
   }
 
@@ -1031,6 +1098,9 @@ export class Viewer {
     // Temporarily detach viewer-only state (overlays, centering, debug materials).
     const edges = this.edgeLines.map((l) => [l, l.parent!] as const)
     edges.forEach(([l]) => l.removeFromParent())
+    const issues = this.issueGroup
+    const issuesParent = issues?.parent
+    issues?.removeFromParent()
     const swapped: [THREE.Mesh, THREE.Material | THREE.Material[]][] = []
     if (this.s.materialMode === 'normals' || this.s.materialMode === 'xray') {
       for (const [m, orig] of this.originals) {
@@ -1051,6 +1121,7 @@ export class Viewer {
       this.modelRoot.updateMatrixWorld(true)
       swapped.forEach(([m, mat]) => (m.material = mat))
       edges.forEach(([l, p]) => p.add(l))
+      if (issues && issuesParent) issuesParent.add(issues)
       this.invalidate()
     }
   }

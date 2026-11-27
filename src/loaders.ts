@@ -124,6 +124,14 @@ async function parse(
     case 'stl': {
       const { STLLoader } = await import('three/examples/jsm/loaders/STLLoader.js')
       const geom = new STLLoader().parse(buffer)
+      // Some exporters write zero (or garbage) facet normals, which renders black. Derive them from the winding.
+      const nrm = geom.attributes.normal
+      if (nrm) {
+        let bad = 0
+        const step = Math.max(1, Math.floor(nrm.count / 2000))
+        for (let i = 0; i < nrm.count; i += step) if (Math.abs(Math.hypot(nrm.getX(i), nrm.getY(i), nrm.getZ(i)) - 1) > 0.01) bad++
+        if (bad > nrm.count / step / 100) geom.computeVertexNormals()
+      }
       const mesh = meshFromGeometry(geom) as THREE.Mesh
       // Binary STL with per-face colours
       const anyGeom = geom as any

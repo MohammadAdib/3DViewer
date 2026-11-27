@@ -5,6 +5,8 @@ import type { Settings, EnvId, ViewName } from './viewer'
 import { ACCEPT, FORMATS, createDemoModel, extOf, loadFiles } from './loaders'
 import { EXPORTS } from './exporters'
 import type { ExportFormat } from './exporters'
+import { DEFAULT_REPAIR, MAX_TRIANGLES, PRINT_FORMATS, analyzeMesh, gatherTriangles, issueCount, repairMesh as runRepair, repairedModel } from './health'
+import type { IssueOverlay, MeshReport, RepairOptions } from './health'
 
 registerSW({ immediate: true })
 
@@ -49,6 +51,9 @@ const ICON: Record<string, string> = {
   play: '<path d="M7 4v16l13-8z"/>',
   pause: '<path d="M7 4h3v16H7zM14 4h3v16h-3z"/>',
   reload: '<path d="M4 12a8 8 0 0 1 14-5.3L20 9M20 4v5h-5M20 12a8 8 0 0 1-14 5.3L4 15M4 20v-5h5"/>',
+  doctor: '<path d="M12 3 4.5 6v5.5c0 4.6 3.2 8.3 7.5 9.5 4.3-1.2 7.5-4.9 7.5-9.5V6z"/><path d="m8.8 12 2.2 2.2 4.4-4.4"/>',
+  close: '<path d="M6 6l12 12M18 6 6 18"/>',
+  wrench: '<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3.6 17.4a1.9 1.9 0 0 0 2.7 2.7l5.7-5.7a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.4-.4-2.4z"/>',
 }
 const icon = (n: string) => `<svg viewBox="0 0 24 24">${ICON[n]}</svg>`
 const LOGO = $('.hero-logo')!.innerHTML
@@ -183,6 +188,7 @@ installBtn.hidden = true
 const measureBtn = btn('ruler', 'Measure distance (M)', () => toggleMeasure(), 'needs-model')
 const statsBtn = btn('info', 'Model info (I)', () => toggleStats(), 'needs-model')
 const panelBtn = btn('sliders', 'Settings panel (H)', () => togglePanel(), 'needs-model')
+const doctorBtn = btn('doctor', 'Mesh check & repair (D)', () => toggleDoctor(), 'needs-model doctor-btn')
 
 const topbar = h(
   'header',
@@ -197,6 +203,7 @@ const topbar = h(
     btn('help', 'Shortcuts (?)', () => help.classList.add('show'), 'hide-sm'),
     btn('full', 'Fullscreen', () => (document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen()), 'hide-sm'),
     measureBtn,
+    doctorBtn,
     statsBtn,
     panelBtn,
     h('span', { class: 'sep needs-model' }),
@@ -229,6 +236,7 @@ function renderStats() {
       h('div', { class: 'dim' }, h('i', {}, 'Z'), h('b', {}, formatLen(s.size.z))),
     ),
     h('div', { class: 'unit' }, `Bounding box · ${unit}`),
+    healthRow(),
   )
 }
 const fmtBytes = (b: number) => (b > 1 << 20 ? `${(b / (1 << 20)).toFixed(1)} MB` : `${(b / 1024).toFixed(1)} KB`)
@@ -238,6 +246,233 @@ function toggleStats(force?: boolean) {
   stats.classList.toggle('hidden', !statsOpen)
   stats.classList.toggle('mobile-show', statsOpen)
   statsBtn.classList.toggle('on', statsOpen)
+}
+
+// ------------------------------------------------------------------- mesh doctor
+type Health =
+  | { state: 'idle' }
+  | { state: 'checking'; triangles: number }
+  | { state: 'repairing'; msg: string; pct: number }
+  | { state: 'error'; error: string }
+  | {
+      state: 'done'
+      report: MeshReport
+      overlay: IssueOverlay
+      ms: number
+      repair?: { before: MeshReport; log: string[]; ms: number }
+    }
+let health: Health = { state: 'idle' }
+const repairOpts: RepairOptions = { ...DEFAULT_REPAIR }
+
+const ROWS: { key: keyof MeshReport; label: string; help: string; minor?: boolean; info?: boolean }[] = [
+  { key: 'nakedEdges', label: 'Naked edges', help: 'Edges used by only one triangle: the surface has a gap there, so the part is not watertight.' },
+  { key: 'planarHoles', label: 'Planar holes', help: 'Openings whose rim lies flat. Repair caps them with a flat patch.' },
+  { key: 'nonPlanarHoles', label: 'Non-planar holes', help: 'Openings with a warped rim. Repair fills them with a minimum-area patch.' },
+  { key: 'nonManifoldEdges', label: 'Non-manifold edges', help: 'Edges shared by more than two triangles: stacked faces, internal walls, or bodies touching along an edge.' },
+  { key: 'invertedNormals', label: 'Inverted normals', help: 'Triangles facing into the part. Slicers can read those regions as empty space.' },
+  { key: 'duplicateFaces', label: 'Duplicate faces', help: 'Triangles lying exactly on top of another one.' },
+  { key: 'degenerateFaces', label: 'Degenerate faces', minor: true, help: 'Zero-area slivers. Harmless to most slicers; repair removes them only where that cannot open a gap.' },
+  { key: 'fragments', label: 'Loose fragments', help: 'Tiny disconnected bits such as specks or stray triangles.' },
+  { key: 'shells', label: 'Shells', info: true, help: 'Separate bodies in the file. Several is fine for multi-part prints.' },
+]
+
+const doctor = h('aside', { class: 'doctor glass' })
+let doctorOpen = false
+function toggleDoctor(force?: boolean) {
+  doctorOpen = force ?? !doctorOpen
+  document.body.classList.toggle('doctor-open', doctorOpen)
+  doctorBtn.classList.toggle('on', doctorOpen)
+  if (doctorOpen && health.state === 'idle') checkMesh(false)
+  renderDoctor()
+}
+
+const isPrintFormat = () => !!viewer.model && PRINT_FORMATS.has(extOf(viewer.model.name))
+
+/** Analyses the current model off-thread. `auto` = triggered by opening a file. */
+async function checkMesh(auto: boolean) {
+  const model = viewer.model
+  if (!model) return
+  const soup = gatherTriangles(model.object)
+  const triangles = soup.length / 9
+  if (!triangles) return setHealth({ state: 'error', error: 'This model has no triangle meshes to check.' })
+  if (triangles > MAX_TRIANGLES) return setHealth({ state: 'error', error: `Too dense to check (${triangles.toLocaleString()} triangles).` })
+  setHealth({ state: 'checking', triangles })
+  try {
+    const r = await analyzeMesh(soup)
+    if (viewer.model !== model) return
+    setHealth({ state: 'done', report: r.report, overlay: r.overlay, ms: r.ms })
+    const n = issueCount(r.report)
+    if (auto && n) {
+      toggleDoctor(true)
+      toast(`${model.name}: ${n} problem${n > 1 ? 's' : ''} found. Highlighted in the view.`, 'err', 4500)
+    }
+  } catch (e) {
+    if ((e as Error).name === 'AbortError' || viewer.model !== model) return
+    setHealth({ state: 'error', error: (e as Error).message })
+  }
+}
+
+async function repairMesh() {
+  const model = viewer.model
+  if (!model || health.state !== 'done') return
+  const before = health.repair?.before ?? health.report
+  const priorLog = health.repair?.log ?? []
+  const soup = gatherTriangles(model.object)
+  setHealth({ state: 'repairing', msg: 'Starting', pct: 0 })
+  try {
+    const r = await runRepair(soup, { ...repairOpts }, (msg, pct) => {
+      if (health.state === 'repairing') {
+        health.msg = msg
+        health.pct = pct
+        renderDoctor()
+      }
+    })
+    if (viewer.model !== model) return
+    showModel(repairedModel(model, r.positions, r.index), true)
+    setHealth({ state: 'done', report: r.after, overlay: r.overlay, ms: r.ms, repair: { before, log: [...priorLog, ...r.log], ms: r.ms } })
+    toast(r.after.watertight ? 'Repaired. The mesh is watertight.' : 'Repaired as far as possible. See the remaining issues.', r.after.watertight ? 'ok' : 'err', 4000)
+  } catch (e) {
+    if ((e as Error).name === 'AbortError') return
+    setHealth({ state: 'error', error: `Repair failed: ${(e as Error).message}` })
+  }
+}
+
+function setHealth(next: Health) {
+  health = next
+  const o = next.state === 'done' ? next.overlay : null
+  viewer.setIssues(o && (o.naked.length || o.nonManifold.length || o.inverted.length) ? o : null)
+  doctorBtn.classList.toggle('warn', next.state === 'done' && issueCount(next.report) > 0)
+  renderDoctor()
+  renderStats()
+}
+
+function healthRow() {
+  if (health.state === 'idle') return ''
+  let text = 'Checking…'
+  let cls = ''
+  if (health.state === 'done') {
+    const n = issueCount(health.report)
+    text = n ? `${n} problem${n > 1 ? 's' : ''}` : 'Watertight'
+    cls = n ? 'bad' : 'good'
+  } else if (health.state === 'repairing') text = 'Repairing…'
+  else if (health.state === 'error') text = 'Not checked'
+  return h('button', { class: 'row health-row', onclick: () => toggleDoctor(true) }, h('span', {}, 'Mesh'), h('span', { class: `pill ${cls}` }, text))
+}
+
+const fmtVolume = (v: number) => (v >= 1000 ? `${formatLen(v / 1000)} cm³` : `${formatLen(v)} mm³`)
+const signed = (n: number) => (n > 0 ? `+${n.toLocaleString()}` : n < 0 ? `−${(-n).toLocaleString()}` : '±0')
+
+function renderDoctor() {
+  if (!doctorOpen) return
+  const head = h(
+    'div',
+    { class: 'doc-head' },
+    h('span', { class: 'doc-title', html: icon('doctor') + 'Mesh check' }),
+    h('button', { class: 'btn icon ghost', title: 'Close (D)', html: icon('close'), onclick: () => toggleDoctor(false) }),
+  )
+  const body: (Node | string)[] = []
+  if (health.state === 'idle' || health.state === 'checking') {
+    const tri = health.state === 'checking' ? `${health.triangles.toLocaleString()} triangles` : 'model'
+    body.push(h('div', { class: 'doc-wait' }, h('div', { class: 'spinner sm' }), `Analysing ${tri}…`))
+  } else if (health.state === 'repairing') {
+    body.push(
+      h(
+        'div',
+        { class: 'doc-wait col' },
+        h('div', { class: 'doc-msg' }, `${health.msg}…`),
+        h('div', { class: 'bar' }, h('i', { style: { width: `${Math.round(health.pct * 100)}%` } })),
+      ),
+    )
+  } else if (health.state === 'error') {
+    body.push(h('p', { class: 'doc-error' }, health.error), h('div', { class: 'row-btns' }, h('button', { class: 'btn', onclick: () => checkMesh(false) }, 'Try again')))
+  } else {
+    const { report: r, repair } = health
+    const n = issueCount(r)
+    const facts = [r.watertight ? 'Watertight' : 'Not watertight', `${r.shells} shell${r.shells === 1 ? '' : 's'}`]
+    if (r.watertight && r.volume > 0) facts.push(fmtVolume(r.volume))
+    body.push(
+      h(
+        'div',
+        { class: `doc-banner ${n ? 'bad' : 'good'}` },
+        h('b', {}, n ? `${n} problem${n > 1 ? 's' : ''} found` : repair ? 'Repaired and ready to print' : 'Ready to print'),
+        h('span', { title: r.watertight && r.volume > 0 ? 'Volume assumes millimetre units' : '' }, facts.join(' · ')),
+      ),
+    )
+    const list = h('div', { class: 'doc-list' })
+    for (const row of ROWS) {
+      const v = r[row.key] as number
+      const was = repair ? (repair.before[row.key] as number) : null
+      const tone = row.info ? '' : v === 0 ? 'good' : row.minor ? 'warn' : 'bad'
+      const line: HTMLElement = h(
+        'button',
+        { class: 'doc-row', onclick: () => line.classList.toggle('open') },
+        h('span', { class: `num ${tone}` }, was != null && was !== v ? h('s', {}, was.toLocaleString()) : '', v.toLocaleString()),
+        h('span', { class: 'lbl' }, row.label),
+        h('span', { class: 'q', title: row.help }, '?'),
+        h('span', { class: 'doc-help' }, row.help),
+      )
+      list.append(line)
+    }
+    body.push(list)
+
+    const o = health.overlay
+    if (o.naked.length || o.nonManifold.length || o.inverted.length) {
+      const cb = h('input', { type: 'checkbox' }) as HTMLInputElement
+      cb.checked = viewer.showIssues
+      cb.onchange = () => viewer.setShowIssues(cb.checked)
+      body.push(
+        h('label', { class: 'ctl' }, h('label', {}, 'Highlight in view'), h('span', { class: 'switch' }, cb, h('i'))),
+        h(
+          'div',
+          { class: 'legend' },
+          o.naked.length ? h('span', {}, h('i', { class: 'naked' }), 'Naked') : '',
+          o.nonManifold.length ? h('span', {}, h('i', { class: 'nm' }), 'Non-manifold') : '',
+          o.inverted.length ? h('span', {}, h('i', { class: 'inv' }), 'Inverted') : '',
+        ),
+      )
+    }
+
+    if (repair) {
+      const b = repair.before
+      const lines = [
+        ...(repair.log.length ? repair.log : ['Nothing needed changing']).map((l) => `-> ${l}`),
+        `Time needed for repair: ${repair.ms.toFixed(0)} ms`,
+        `--> Vertices ${b.vertices.toLocaleString()} → ${r.vertices.toLocaleString()} (${signed(r.vertices - b.vertices)})`,
+        `--> Triangles ${b.triangles.toLocaleString()} → ${r.triangles.toLocaleString()} (${signed(r.triangles - b.triangles)})`,
+      ]
+      body.push(h('pre', { class: 'doc-log' }, lines.join('\n')))
+    }
+
+    const canRepair = n > 0 || r.degenerateFaces > 0
+    if (canRepair) {
+      const opt = (key: keyof RepairOptions, label: string) => {
+        const cb = h('input', { type: 'checkbox' }) as HTMLInputElement
+        cb.checked = repairOpts[key]
+        cb.onchange = () => (repairOpts[key] = cb.checked)
+        return h('label', { class: 'doc-opt' }, cb, label)
+      }
+      body.push(
+        h(
+          'details',
+          { class: 'doc-opts' },
+          h('summary', {}, 'Repair options'),
+          opt('fillHoles', 'Fill holes'),
+          opt('fixNormals', 'Fix inverted normals'),
+          opt('removeInternal', 'Remove internal walls'),
+          opt('removeFragments', 'Remove loose fragments'),
+        ),
+      )
+    }
+    const actions = h('div', { class: 'row-btns' })
+    if (canRepair) actions.append(h('button', { class: `btn ${n ? 'primary' : ''}`, html: icon('wrench') + (repair ? 'Repair again' : 'Repair mesh'), onclick: repairMesh }))
+    if (repair) {
+      actions.append(h('button', { class: `btn ${n ? '' : 'primary'}`, html: icon('export') + 'Download STL', onclick: () => doExport('stl') }))
+      if (currentFiles.length) actions.append(h('button', { class: 'btn', title: 'Reload the original file', onclick: () => openFiles(currentFiles, true) }, 'Revert'))
+    }
+    if (actions.childElementCount) body.push(actions)
+    body.push(h('p', { class: 'note' }, `Checked ${r.triangles.toLocaleString()} triangles in ${health.ms.toFixed(0)} ms, on your device.`))
+  }
+  doctor.replaceChildren(head, ...body)
 }
 
 // ------------------------------------------------------------------- dock
@@ -488,9 +723,16 @@ const rotateGroup = group(
   ...ROT_AXES.map(([axis, key]) => slider(`${axis.toUpperCase()} angle`, key, -180, 180, 1, (v) => `${v}°`)),
 )
 
+const meshGroup = group(
+  'Mesh repair',
+  h('p', { class: 'note' }, 'Find holes, non-manifold edges, flipped normals and more, then fix them for printing.'),
+  h('div', { class: 'row-btns' }, h('button', { class: 'btn', html: icon('doctor') + 'Check & repair mesh', onclick: () => toggleDoctor(true) })),
+)
+
 const toolsPage = h(
   'div',
   { class: 'tab-page' },
+  meshGroup,
   rotateGroup,
   group(
     'Camera',
@@ -544,7 +786,7 @@ const recBadge = h('div', { class: 'rec glass' }, h('i'), h('span', {}, 'Recordi
 const KEYS: [string, string][] = [
   ['O', 'Open file'], ['F', 'Fit view'], ['1–6', 'Front/Back/Left/Right/Top/Bottom'], ['0', 'Isometric'],
   ['P', 'Persp / Ortho'], ['R', 'Auto-rotate'], ['G', 'Grid'], ['W', 'Wireframe'], ['E', 'Edge lines'],
-  ['X', 'Section cut'], ['M', 'Measure'], ['S', 'Screenshot'], ['I', 'Model info'], ['H', 'Panel'],
+  ['X', 'Section cut'], ['D', 'Mesh check & repair'], ['M', 'Measure'], ['S', 'Screenshot'], ['I', 'Model info'], ['H', 'Panel'],
   ['Dbl-click', 'Set pivot'], ['Esc', 'Close / cancel'],
 ]
 const help = h(
@@ -553,7 +795,7 @@ const help = h(
   h('div', { class: 'box glass' }, h('h3', {}, 'Keyboard shortcuts'), h('div', { class: 'keys' }, ...KEYS.map(([k, d]) => h('div', {}, h('span', {}, d), h('kbd', {}, k))))),
 )
 
-app.append(topbar, stats, dock, panel, drop, loading, toasts, measureHint, recBadge, help, fileInput)
+app.append(topbar, stats, doctor, dock, panel, drop, loading, toasts, measureHint, recBadge, help, fileInput)
 
 function toast(msg: string, kind: 'ok' | 'err' | '' = '', ms = 3500) {
   const t = h('div', { class: `toast glass ${kind}` }, msg)
@@ -578,6 +820,7 @@ async function openFiles(files: File[], reload = false) {
     loadMs = performance.now() - t0
     currentFiles = files
     showModel(model, reload)
+    if (isPrintFormat() || doctorOpen) checkMesh(isPrintFormat())
     toast(`Loaded ${model.name} in ${loadMs < 1000 ? loadMs.toFixed(0) + ' ms' : (loadMs / 1000).toFixed(2) + ' s'}`, 'ok', 2200)
   } catch (err) {
     console.error(err)
@@ -600,11 +843,14 @@ function showModel(model: ReturnType<typeof createDemoModel>, reload = false) {
   titleEl.title = model.name
   badgeEl.textContent = model.format
   document.title = `${model.name} — 3D Viewer`
+  health = { state: 'idle' }
+  doctorBtn.classList.remove('warn')
   renderStats()
   renderParts()
   renderAnim()
   renderCad()
   syncMeasure()
+  renderDoctor()
 }
 
 const baseName = () => (viewer.model?.name ?? 'model').replace(/\.[^.]+$/, '')
@@ -737,6 +983,7 @@ window.addEventListener('keydown', (e) => {
     help.classList.remove('show')
     exportMenu.classList.remove('open')
     if (viewer.measuring) toggleMeasure(false)
+    else if (doctorOpen) toggleDoctor(false)
   } else if (k === 'h') togglePanel()
   else if (!hasModel) return
   else if (k in viewKeys) viewer.view(viewKeys[k])
@@ -748,6 +995,7 @@ window.addEventListener('keydown', (e) => {
   else if (k === 'p') set({ projection: viewer.s.projection === 'perspective' ? 'orthographic' : 'perspective' })
   else if (k === 'x') cycleSection()
   else if (k === 'm') toggleMeasure()
+  else if (k === 'd') toggleDoctor()
   else if (k === 's') doScreenshot()
   else if (k === 'i') toggleStats()
   else return
