@@ -9,6 +9,7 @@ export interface CadRequest {
   ext: string
   buffer: ArrayBuffer
   quality: number // 0 (coarse) .. 1 (fine)
+  countOnly?: boolean // reply with triangle/vertex totals instead of meshes
 }
 
 export interface CadMesh {
@@ -26,15 +27,21 @@ export interface CadNode {
   children: CadNode[]
 }
 
+export interface CadCount {
+  triangles: number
+  vertices: number
+}
+
 export type CadResponse =
   | { id: number; ok: true; meshes: CadMesh[]; root: CadNode | null }
+  | { id: number; ok: true; count: CadCount }
   | { id: number; ok: false; error: string }
   | { id: number; progress: string }
 
 let occtPromise: Promise<any> | null = null
 
 self.onmessage = async (e: MessageEvent<CadRequest>) => {
-  const { id, ext, buffer, quality } = e.data
+  const { id, ext, buffer, quality, countOnly } = e.data
   const post = (msg: CadResponse, transfer: Transferable[] = []) =>
     (self as unknown as DedicatedWorkerGlobalScope).postMessage(msg, transfer)
   try {
@@ -62,6 +69,16 @@ self.onmessage = async (e: MessageEvent<CadRequest>) => {
           : occt.ReadStepFile(data, params)
 
     if (!res || !res.success) throw new Error('OpenCascade could not read this file.')
+
+    if (countOnly) {
+      let triangles = 0
+      let vertices = 0
+      for (const m of res.meshes) {
+        triangles += m.index.array.length / 3
+        vertices += m.attributes.position.array.length / 3
+      }
+      return post({ id, ok: true, count: { triangles, vertices } })
+    }
 
     const transfer: Transferable[] = []
     const meshes: CadMesh[] = res.meshes.map((m: any) => {

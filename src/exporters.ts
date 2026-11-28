@@ -12,6 +12,32 @@ export const EXPORTS: { id: ExportFormat; label: string; hint: string }[] = [
   { id: 'usdz', label: 'USDZ', hint: 'Apple AR Quick Look' },
 ]
 
+/**
+ * Rough output size, for previews, of a mesh with `t` triangles and `v` vertices (normals, no UVs).
+ * Binary STL is exact; text formats assume typical number lengths.
+ */
+export function estimateSize(fmt: ExportFormat, t: number, v: number) {
+  const NUM = 12 // average JS number as text: long doubles mixed with round CAD values like "25" (measured)
+  const NUM7 = 9 // USDZ writes toPrecision(7)
+  const d = String(Math.max(1, Math.round(v))).length // digits in a vertex index
+  switch (fmt) {
+    case 'stl':
+      return 84 + 50 * t
+    case 'stl-ascii': // facet normal + outer loop + 3 vertex lines + endloop + endfacet
+      return 32 + t * (77 + 4 * (3 * NUM + 3))
+    case 'obj': // "v x y z" + "vn x y z" per vertex, "f a//a b//b c//c" per triangle
+      return v * (6 * NUM + 11) + t * (6 * d + 11)
+    case 'ply': // float32 position + normal, uchar count + 3 int32 indices
+      return 300 + 24 * v + 13 * t
+    case 'glb':
+      return 2048 + 24 * v + 12 * t
+    case 'gltf': // same buffers, base64-embedded
+      return 2048 + Math.ceil(((24 * v + 12 * t) * 4) / 3)
+    case 'usdz': // text points + normals, then face indices and counts
+      return 4096 + v * 2 * (3 * NUM7 + 6) + t * (3 * (d + 2) + 3)
+  }
+}
+
 export async function exportObject(obj: THREE.Object3D, fmt: ExportFormat, baseName: string) {
   obj.updateMatrixWorld(true)
   let data: BlobPart

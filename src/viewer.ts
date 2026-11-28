@@ -1090,10 +1090,31 @@ export class Viewer {
     download(new Blob(chunks, { type: mime.split(';')[0] || 'video/webm' }), `${name}-turntable.${ext}`)
   }
 
-  /** Exports the model with the part rotation applied. Mesh formats stay in the file's own axes; glTF/USDZ are written Y-up. */
-  async export(fmt: ExportFormat, name: string) {
+  /**
+   * Exports the model with the part rotation applied. Mesh formats stay in the file's own axes; glTF/USDZ are written Y-up.
+   * `replacement` (e.g. the same CAD file tessellated at another detail level) is exported in the model's place
+   * and disposed afterwards.
+   */
+  async export(fmt: ExportFormat, name: string, replacement?: THREE.Object3D) {
     if (!this.model) return
-    const content = this.model.object
+    const original = this.model.object
+    const content = replacement ?? original
+    const ownMats = new Set<THREE.Material>()
+    if (replacement) {
+      const a: THREE.Object3D[] = []
+      const b: THREE.Object3D[] = []
+      original.traverse((o) => void (!o.userData.isOverlay && a.push(o)))
+      replacement.traverse((o) => void b.push(o))
+      if (a.length === b.length) a.forEach((o, i) => (b[i].visible = o.visible)) // keep hidden parts hidden
+      replacement.traverse((o) => {
+        const m = o as THREE.Mesh
+        if (!m.isMesh) return
+        for (const x of Array.isArray(m.material) ? m.material : [m.material]) ownMats.add(x)
+        if (this.s.materialMode === 'custom') m.material = this.customMat
+      })
+      this.rotGroup.remove(original)
+      this.rotGroup.add(replacement)
+    }
     const keepUp = fmt === 'glb' || fmt === 'gltf' || fmt === 'usdz'
     // Temporarily detach viewer-only state (overlays, centering, debug materials).
     const edges = this.edgeLines.map((l) => [l, l.parent!] as const)
@@ -1122,6 +1143,13 @@ export class Viewer {
       swapped.forEach(([m, mat]) => (m.material = mat))
       edges.forEach(([l, p]) => p.add(l))
       if (issues && issuesParent) issuesParent.add(issues)
+      if (replacement) {
+        this.rotGroup.remove(replacement)
+        this.rotGroup.add(original)
+        this.modelRoot.updateMatrixWorld(true)
+        replacement.traverse((o) => void ((o as THREE.Mesh).isMesh && (o as THREE.Mesh).geometry.dispose()))
+        ownMats.forEach((m) => m.dispose())
+      }
       this.invalidate()
     }
   }

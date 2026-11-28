@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import type { CadRequest, CadResponse, CadNode } from './cad.worker'
+import type { CadRequest, CadResponse, CadNode, CadCount } from './cad.worker'
 
 export type UpAxis = 'y' | 'z'
 
@@ -13,6 +13,8 @@ export interface LoadedModel {
   upAxis: UpAxis
   animations: THREE.AnimationClip[]
   bytes: number
+  /** Detail level a CAD (B-Rep) model was tessellated at. */
+  cadQuality?: number
 }
 
 export type Progress = (msg: string) => void
@@ -87,6 +89,7 @@ export async function loadFiles(files: File[], onProgress: Progress, cadQuality 
       upAxis: FORMATS[ext].up,
       animations,
       bytes: files.reduce((s, f) => s + f.size, 0),
+      cadQuality: FORMATS[ext].cad ? cadQuality : undefined,
     }
   } finally {
     // Textures are decoded asynchronously; give them a moment before revoking.
@@ -240,30 +243,74 @@ export const setLoaderRenderer = (r: THREE.WebGLRenderer) => (sharedRenderer = r
 // ---------------------------------------------------------------- CAD (worker)
 let worker: Worker | null = null
 let reqId = 0
+const newCadWorker = () => new Worker(new URL('./cad.worker.ts', import.meta.url), { type: 'module' })
 
-async function parseCad(ext: string, buffer: ArrayBuffer, onProgress: Progress, quality: number): Promise<THREE.Object3D> {
-  worker ??= new Worker(new URL('./cad.worker.ts', import.meta.url), { type: 'module' })
+/** Sends one request to a CAD worker; `onCrash` runs if the worker dies (it is then unusable). */
+function requestCad(w: Worker, req: Omit<CadRequest, 'id'>, onProgress: Progress, onCrash: () => void) {
   const id = ++reqId
-  const w = worker
-  const res = await new Promise<Extract<CadResponse, { ok: true }>>((resolve, reject) => {
+  return new Promise<Extract<CadResponse, { ok: true }>>((resolve, reject) => {
+    const done = () => {
+      w.removeEventListener('message', onMsg)
+      w.removeEventListener('error', onErr)
+    }
     const onMsg = (e: MessageEvent<CadResponse>) => {
       const m = e.data
       if (m.id !== id) return
       if ('progress' in m) return onProgress(m.progress)
-      w.removeEventListener('message', onMsg)
-      w.removeEventListener('error', onErr)
+      done()
       m.ok ? resolve(m) : reject(new Error(m.error))
     }
     const onErr = (e: ErrorEvent) => {
-      w.removeEventListener('message', onMsg)
-      worker = null
-      w.terminate()
+      done()
+      onCrash()
       reject(new Error(e.message || 'CAD worker crashed (file may be too large).'))
     }
     w.addEventListener('message', onMsg)
     w.addEventListener('error', onErr)
-    w.postMessage({ id, ext, buffer, quality } satisfies CadRequest, [buffer])
+    w.postMessage({ id, ...req } satisfies CadRequest, [req.buffer])
   })
+}
+
+/** Re-tessellates a CAD file at another detail level, e.g. to export finer or coarser than shown. */
+export async function tessellateCad(file: File, quality: number, onProgress: Progress = () => {}) {
+  return parseCad(extOf(file.name), await file.arrayBuffer(), onProgress, quality)
+}
+
+/**
+ * Counts the triangles/vertices a CAD file would tessellate to at a given detail level. Runs on its
+ * own worker so a slow estimate never blocks loading, and `dispose()` can abort it outright.
+ */
+export function cadCounter(file: File) {
+  let w: Worker | null = null
+  let disposed = false
+  return {
+    async count(quality: number): Promise<CadCount> {
+      if (disposed) throw new Error('disposed')
+      const buffer = await file.arrayBuffer()
+      const cw = (w ??= newCadWorker())
+      const crashed = () => {
+        cw.terminate()
+        if (w === cw) w = null
+      }
+      const res = await requestCad(cw, { ext: extOf(file.name), buffer, quality, countOnly: true }, () => {}, crashed)
+      if (!('count' in res)) throw new Error('Unexpected CAD worker reply.')
+      return res.count
+    },
+    dispose() {
+      disposed = true
+      w?.terminate()
+      w = null
+    },
+  }
+}
+
+async function parseCad(ext: string, buffer: ArrayBuffer, onProgress: Progress, quality: number): Promise<THREE.Object3D> {
+  const w = (worker ??= newCadWorker())
+  const res = await requestCad(w, { ext, buffer, quality }, onProgress, () => {
+    if (worker === w) worker = null
+    w.terminate()
+  })
+  if (!('meshes' in res)) throw new Error('Unexpected CAD worker reply.')
 
   onProgress('Building meshes…')
   const meshes = res.meshes.map((m, i) => {

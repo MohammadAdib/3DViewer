@@ -313,6 +313,18 @@ input[type=range]:active::-webkit-slider-thumb { transform: scale(1.2); }
 .modal.show { display: grid; }
 .modal .box { width: min(520px, 100%); padding: 20px 22px; max-height: 90vh; overflow: auto; }
 .modal h3 { margin: 0 0 14px; font-size: 16px; }
+.qlist { display: flex; flex-direction: column; gap: 4px; margin: 12px 0 4px; }
+.qrow {
+  display: grid; grid-template-columns: 1fr auto minmax(76px, auto); gap: 14px; align-items: center; width: 100%;
+  padding: 9px 12px; border-radius: 10px; border: 1px solid var(--line); background: rgba(255,255,255,.03);
+  color: var(--text); font: inherit; text-align: left; cursor: pointer;
+}
+.qrow:hover { background: rgba(255,255,255,.06); border-color: var(--line-2); }
+.qrow.active { border-color: var(--accent); background: rgba(94,231,255,.08); }
+.qrow .name { font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.qrow em { font: 10px/1 var(--mono); font-style: normal; padding: 3px 6px; border-radius: 6px; background: rgba(94,231,255,.12); color: var(--accent); }
+.qrow .n { font: 11.5px var(--mono); color: var(--muted); text-align: right; white-space: nowrap; }
+.modal .row-btns { margin-top: 14px; }
 .keys { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 22px; }
 .keys div { display: flex; justify-content: space-between; align-items: center; gap: 8px; color: var(--muted); }
 

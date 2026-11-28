@@ -2,8 +2,9 @@ import './style.css'
 import { registerSW } from 'virtual:pwa-register'
 import { Viewer, DEFAULTS, ENVS, formatLen, turnRotation } from './viewer'
 import type { Settings, EnvId, ViewName } from './viewer'
-import { ACCEPT, FORMATS, createDemoModel, extOf, loadFiles } from './loaders'
-import { EXPORTS } from './exporters'
+import { ACCEPT, FORMATS, cadCounter, createDemoModel, extOf, loadFiles, tessellateCad } from './loaders'
+import { EXPORTS, estimateSize } from './exporters'
+import type { CadCount } from './cad.worker'
 import type { ExportFormat } from './exporters'
 import { DEFAULT_REPAIR, MAX_TRIANGLES, PRINT_FORMATS, analyzeMesh, gatherTriangles, issueCount, repairMesh as runRepair, repairedModel } from './health'
 import type { IssueOverlay, MeshReport, RepairOptions } from './health'
@@ -795,7 +796,98 @@ const help = h(
   h('div', { class: 'box glass' }, h('h3', {}, 'Keyboard shortcuts'), h('div', { class: 'keys' }, ...KEYS.map(([k, d]) => h('div', {}, h('span', {}, d), h('kbd', {}, k))))),
 )
 
-app.append(topbar, stats, doctor, dock, panel, drop, loading, toasts, measureHint, recBadge, help, fileInput)
+// CAD export: B-Rep surfaces have no fixed triangle count, so let the user pick the export detail.
+const CAD_LEVELS: [string, number][] = [['Coarse', 0], ['Low', 0.25], ['Medium', 0.5], ['High', 0.75], ['Fine', 1]]
+const exportDlg = h('div', { class: 'modal', onclick: (e: MouseEvent) => e.target === exportDlg && exportDlgKey?.('escape') })
+/** Key handler while the dialog is open; returns true for keys it consumed. */
+let exportDlgKey: ((k: string) => boolean) | null = null
+
+/** Resolves to the chosen detail level, or null if cancelled. */
+function askCadExportQuality(fmt: ExportFormat, file: File): Promise<number | null> {
+  return new Promise((resolve) => {
+    const model = viewer.model!
+    const shown = model.cadQuality ?? viewer.s.cadQuality
+    const label = EXPORTS.find((x) => x.id === fmt)!.label
+    const levels = CAD_LEVELS.map(([name, q]) => ({ name, q }))
+    if (!levels.some((l) => l.q === shown)) levels.push({ name: `Detail ${Math.round(shown * 100)}%`, q: shown })
+    levels.sort((a, b) => a.q - b.q)
+
+    let chosen = shown
+    const rows = levels.map((l) => {
+      const tris = h('span', { class: 'n' }, '…')
+      const size = h('span', { class: 'n' })
+      const row = h('button', { class: 'qrow', onclick: () => pick(l.q), ondblclick: () => finish(l.q) }, h('span', { class: 'name' }, l.name, l.q === shown ? h('em', {}, 'as shown') : ''), tris, size)
+      return { ...l, row, tris, size }
+    })
+    const pick = (q: number) => {
+      chosen = q
+      rows.forEach((r) => r.row.classList.toggle('active', r.q === q))
+    }
+    const fill = (r: (typeof rows)[number], c: CadCount) => {
+      r.tris.textContent = `${c.triangles.toLocaleString()} tris`
+      r.size.textContent = `≈ ${fmtBytes(estimateSize(fmt, c.triangles, c.vertices))}`
+    }
+
+    const counter = cadCounter(file)
+    let open = true
+    const finish = (q: number | null) => {
+      if (!open) return
+      open = false
+      counter.dispose()
+      exportDlgKey = null
+      exportDlg.classList.remove('show')
+      resolve(q)
+    }
+    exportDlgKey = (k) => {
+      const i = rows.findIndex((r) => r.q === chosen)
+      if (k === 'escape') finish(null)
+      else if (k === 'enter') finish(chosen)
+      else if (k === 'arrowup' || k === 'arrowdown') pick(rows[Math.max(0, Math.min(rows.length - 1, i + (k === 'arrowup' ? -1 : 1)))].q)
+      else return false
+      return true
+    }
+
+    exportDlg.replaceChildren(
+      h(
+        'div',
+        { class: 'box glass' },
+        h('h3', {}, `Export ${label}`),
+        h('p', { class: 'note' }, `${model.name} is a ${model.format} CAD model. Pick how finely its curved surfaces are turned into triangles.`),
+        h('div', { class: 'qlist' }, ...rows.map((r) => r.row)),
+        h('p', { class: 'note' }, 'Sizes are estimates. More detail gives smoother curves and bigger files.'),
+        h(
+          'div',
+          { class: 'row-btns' },
+          h('button', { class: 'btn', onclick: () => finish(null) }, 'Cancel'),
+          h('button', { class: 'btn primary', onclick: () => finish(chosen) }, `Export ${label}`),
+        ),
+      ),
+    )
+    pick(shown)
+    exportDlg.classList.add('show')
+
+    // The level on screen is known already; tessellate the others in the background, coarse to fine.
+    ;(async () => {
+      const s = viewer.stats()
+      for (const r of rows) if (r.q === shown) fill(r, { triangles: s.triangles, vertices: s.vertices })
+      for (const r of rows) {
+        if (r.q === shown) continue
+        try {
+          const c = await counter.count(r.q)
+          if (!open) return
+          fill(r, c)
+        } catch {
+          if (!open) return
+          // A finer level would fail the same way (usually out of memory), so stop here.
+          for (const x of rows.filter((x) => x.q >= r.q && x.q !== shown)) x.tris.textContent = 'too large'
+          return
+        }
+      }
+    })()
+  })
+}
+
+app.append(topbar, stats, doctor, dock, panel, drop, loading, toasts, measureHint, recBadge, help, exportDlg, fileInput)
 
 function toast(msg: string, kind: 'ok' | 'err' | '' = '', ms = 3500) {
   const t = h('div', { class: `toast glass ${kind}` }, msg)
@@ -832,6 +924,7 @@ async function openFiles(files: File[], reload = false) {
 
 /** `reload` re-opens the same files (e.g. re-tessellating), so the part keeps its orientation. */
 function showModel(model: ReturnType<typeof createDemoModel>, reload = false) {
+  exportDlgKey?.('escape') // a pending CAD export dialog belongs to the previous model
   const p = PER_MODEL
   const s = viewer.s
   if (!reload && (s.section !== p.section || s.upAxis !== p.upAxis || s.rotX || s.rotY || s.rotZ)) viewer.apply(p)
@@ -855,15 +948,28 @@ function showModel(model: ReturnType<typeof createDemoModel>, reload = false) {
 
 const baseName = () => (viewer.model?.name ?? 'model').replace(/\.[^.]+$/, '')
 
+/** The open model's CAD source file, if it is a B-Rep model that can be re-tessellated. */
+function cadSource() {
+  const m = viewer.model
+  if (!m || !FORMATS[extOf(m.name)]?.cad) return null
+  return currentFiles.find((f) => f.name === m.name) ?? null
+}
+
 async function doExport(fmt: ExportFormat) {
   exportMenu.classList.remove('open')
   if (!viewer.model) return
+  const cad = cadSource()
+  const quality = cad ? await askCadExportQuality(fmt, cad) : null
+  if (cad && quality === null) return
   loadingFile.textContent = `Exporting ${fmt.toUpperCase()}`
   loadingMsg.textContent = 'Writing file…'
   loading.classList.add('show')
   await new Promise((r) => setTimeout(r, 30))
   try {
-    await viewer.export(fmt, baseName())
+    const retess = cad && quality !== null && quality !== viewer.model.cadQuality
+    const replacement = retess ? await tessellateCad(cad, quality, (m) => (loadingMsg.textContent = m)) : undefined
+    loadingMsg.textContent = 'Writing file…'
+    await viewer.export(fmt, baseName(), replacement)
     toast(`Exported ${baseName()}.${fmt === 'stl-ascii' ? 'stl' : fmt}`, 'ok')
   } catch (e) {
     console.error(e)
@@ -975,6 +1081,11 @@ window.addEventListener('keydown', (e) => {
     return
   }
   const k = e.key.toLowerCase()
+  if (exportDlgKey) {
+    // Consume handled keys so e.g. Enter doesn't also click the still-focused Export menu item.
+    if (exportDlgKey(k)) e.preventDefault()
+    return
+  }
   const hasModel = !!viewer.model
   const viewKeys: Record<string, ViewName> = { '1': 'front', '2': 'back', '3': 'left', '4': 'right', '5': 'top', '6': 'bottom', '0': 'iso' }
   if (k === 'o') fileInput.click()
